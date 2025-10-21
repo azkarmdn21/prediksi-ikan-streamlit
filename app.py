@@ -4,28 +4,37 @@ import numpy as np
 import joblib
 import warnings
 import openpyxl 
-import plotly.express as px # Import Plotly untuk visualisasi interaktif
+import plotly.express as px
 
 warnings.filterwarnings('ignore')
 
+# --- CONFIG APLIKASI (UI Enhancement) ---
+st.set_page_config(
+    page_title="Prediksi Ikan Jabar - Hybrid ARIMA-SVR", 
+    layout="wide", 
+    initial_sidebar_state="expanded",
+    page_icon="🐟"
+)
+
 # --- 1. FUNGSI PEMUATAN DAN PREDIKSI ---
+
+# Hapus fungsi ARIMA dan SVR dari file ini agar Streamlit tidak mengimpor ulang.
+# Asumsikan semua dependensi model sudah dihandle oleh joblib saat model disimpan.
+# Namun, karena model ARIMA membutuhkan kelas ARIMA, kita tetap pertahankan import di atas.
 
 @st.cache_data
 def load_data():
     """Memuat data historis dan model yang telah dilatih."""
     try:
-        # Muat model
         models_dict = joblib.load('all_models_hybrid.pkl')
     except FileNotFoundError:
         st.error("File model 'all_models_hybrid.pkl' tidak ditemukan. Pastikan file ada di folder yang sama.")
         st.stop()
         
     try:
-        # Muat data historis (menggunakan read_excel)
         df_hist = pd.read_excel('produksi_pembenihan_jawaBarat_2019_2023.xlsx') 
         df_hist['Tahun'] = pd.to_datetime(df_hist['Tahun'], format='%Y')
         
-        # Agregasi data yang sama seperti saat pelatihan
         data_grouped = df_hist.groupby(['Tahun', 'Kelompok Ikan']).agg({
             'Volume (Ribu Ekor)': 'sum',
             'Nilai (Rp. Juta)': 'sum',
@@ -68,101 +77,164 @@ def run_recursive_prediction(model_components, future_inputs_df):
         hybrid_pred_step = 0.5 * arima_preds.iloc[i] + 0.5 * svr_pred_step
         hybrid_preds.append(hybrid_pred_step)
         
-        # Update lag rekursif
         current_lag_volume = hybrid_pred_step
         
     results_df = future_inputs_df.copy()
     results_df['Tahun'] = results_df['Tahun'].dt.year
     results_df['ARIMA_Pred'] = arima_preds.values.round(2)
     results_df['SVR_Pred'] = np.array(svr_preds).round(2)
-    results_df['Prediksi_Hybrid (Volume Ribu Ekor)'] = np.array(hybrid_preds).round(2)
+    results_df['Prediksi_Hybrid (Ribu Ekor)'] = np.array(hybrid_preds).round(2)
     
     return results_df
 
-# --- 2. SETUP TAMPILAN STREAMLIT ---
+# --- 2. LAYOUT UTAMA ---
 
-st.set_page_config(page_title="Prediksi Volume Ikan Jabar", layout="wide")
-st.title("🐟 Aplikasi Prediksi Volume Produksi Ikan (Hybrid ARIMA-SVR)")
-st.caption("Dikembangkan dengan Streamlit dan Model Hybrid ARIMA-SVR")
-
-# Muat data
 models_dict, data_hist = load_data()
 fish_types = sorted(list(models_dict.keys()))
 
-# --- 3. UI (USER INTERFACE) ---
+st.title("🐟 Proyeksi Produksi Benih Ikan Jawa Barat")
+st.markdown("Aplikasi berbasis Model Hybrid ARIMA-SVR untuk memproyeksikan Volume produksi per jenis ikan.")
 
-st.sidebar.header("Panel Kontrol & Input")
+# --- SIDEBAR: KONTROL ---
+
+st.sidebar.header("⚙️ Kontrol & Seleksi")
 selected_fish = st.sidebar.selectbox("Pilih Kelompok Ikan:", fish_types)
 
-# Dapatkan tahun terakhir dari data
-last_year = models_dict[selected_fish]['last_known_year'].year
+last_year_data = models_dict[selected_fish]['last_known_year'].year
 max_years = 10
-num_periods = st.sidebar.slider("Jumlah Tahun Prediksi:", min_value=1, max_value=max_years, value=3)
+num_periods = st.sidebar.slider("Jumlah Tahun Proyeksi:", min_value=1, max_value=max_years, value=3)
 
-# --- TAMPILAN GRAFIK HISTORIS (Default) ---
-st.subheader(f"Tren Volume Produksi Historis {selected_fish}")
-hist_data_volume = data_hist[data_hist['Kelompok Ikan'] == selected_fish]['Volume (Ribu Ekor)']
-st.line_chart(hist_data_volume)
+# Dapatkan data historis ikan terpilih
+hist_data = data_hist[data_hist['Kelompok Ikan'] == selected_fish]
+hist_last_row = hist_data.iloc[-1]
+hist_last_volume = hist_last_row['Volume (Ribu Ekor)']
+hist_last_nilai = hist_last_row['Nilai (Rp. Juta)']
 
-st.header(f"Form Input Asumsi ({selected_fish})")
+# --- METRIC CARDS (Header Section) ---
+
+st.markdown("---")
+st.subheader(f"Dashboard Metrik Kunci untuk **{selected_fish}**")
+
+# Hitung Rata-rata Volume Historis untuk Metrik Peningkatan
+hist_avg_volume = hist_data['Volume (Ribu Ekor)'].mean()
+volume_delta = hist_last_volume - hist_avg_volume
+
+col_metric1, col_metric2, col_metric3 = st.columns(3)
+
+with col_metric1:
+    st.metric(
+        label=f"Volume Aktual Terakhir ({last_year_data})",
+        value=f"{hist_last_volume:,.0f} Ribu Ekor",
+        delta=f"{volume_delta:,.0f} Ribu (vs. Rata-rata Hist.)",
+        delta_color="normal"
+    )
+
+with col_metric2:
+    st.metric(
+        label="Rata-rata Nilai (2019 - 2023)",
+        value=f"Rp {hist_data['Nilai (Rp. Juta)'].mean():,.2f} Juta"
+    )
+
+with col_metric3:
+    st.metric(
+        label="Rata-rata Harga (2019 - 2023)",
+        value=f"Rp {hist_data['Harga Rata-Rata Tertimbang(Rp/ ribu ekor)'].mean():,.0f}"
+    )
+    
+st.markdown("---")
+
+# --- 3. FORM INPUT ASUMSI ---
+
+st.subheader(f"📝 Asumsi Input Ekonomi ({last_year_data + 1} - {last_year_data + num_periods})")
 st.info(f"""
-Model membutuhkan input asumsi **Nilai (Rp. Juta)** dan **Harga Rata-Rata Tertimbang** untuk memprediksi Volume produksi dalam **{num_periods} tahun** ke depan.
+Model membutuhkan input asumsi **Nilai (Rp. Juta)** dan **Harga Rata-Rata** untuk {num_periods} tahun ke depan. Nilai default diisi dengan data aktual terakhir ({last_year_data}).
 """)
 
-# Buat DataFrame kosong untuk diisi pengguna
-future_years = [pd.to_datetime(f"{last_year + i + 1}-01-01") for i in range(num_periods)]
+future_years = [pd.to_datetime(f"{last_year_data + i + 1}-01-01") for i in range(num_periods)]
+
+# Nilai default diisi dengan nilai aktual terakhir
+default_nilai = [hist_last_nilai] * num_periods
+default_harga = [hist_last_row['Harga Rata-Rata Tertimbang(Rp/ ribu ekor)']] * num_periods
+
 df_input = pd.DataFrame({
     'Tahun': future_years,
-    'Nilai (Rp. Juta)': [hist_data_volume.iloc[-1] / 2] * num_periods, # Default diisi nilai estimasi awal
-    'Harga Rata-Rata Tertimbang(Rp/ ribu ekor)': [hist_data_volume.iloc[-1] / 3] * num_periods
+    'Nilai (Rp. Juta)': default_nilai, 
+    'Harga Rata-Rata Tertimbang(Rp/ ribu ekor)': default_harga
 })
 
-# Gunakan st.data_editor agar pengguna bisa mengedit nilai
-st.subheader("Masukkan Asumsi Fitur Masa Depan:")
 edited_df = st.data_editor(
     df_input,
-    num_rows="fixed", # Membatasi baris sesuai input slider
+    num_rows="fixed",
     column_config={
-        "Tahun": st.column_config.DateColumn("Tahun Prediksi", format="YYYY", disabled=True),
-        "Nilai (Rp. Juta)": st.column_config.NumberColumn("Nilai (Rp. Juta)", format="%.2f", required=True),
-        "Harga Rata-Rata Tertimbang(Rp/ ribu ekor)": st.column_config.NumberColumn("Harga Rata-Rata (Rp/ribu ekor)", format="%.2f", required=True)
+        "Tahun": st.column_config.DateColumn("Tahun Proyeksi", format="YYYY", disabled=True),
+        "Nilai (Rp. Juta)": st.column_config.NumberColumn("Nilai Asumsi (Rp Juta)", format="%.2f", required=True),
+        "Harga Rata-Rata Tertimbang(Rp/ ribu ekor)": st.column_config.NumberColumn("Harga Rata-Rata Asumsi (Rp/ribu ekor)", format="%.2f", required=True)
     },
     use_container_width=True,
     key=f"editor_{selected_fish}_{num_periods}" 
 )
 
-# Tombol untuk menjalankan prediksi
-if st.button("Jalankan Prediksi dan Tampilkan Hasil", type="primary"):
+# --- 4. TOMBOL PREDIIKSI ---
+
+if st.button("🚀 Jalankan Proyeksi", type="primary"):
     
-    # Validasi input sederhana
     if edited_df.isnull().values.any() or (edited_df[['Nilai (Rp. Juta)', 'Harga Rata-Rata Tertimbang(Rp/ ribu ekor)']] == 0).any().any():
-        st.error("Error: Pastikan semua kolom input terisi dan tidak bernilai nol (0).")
+        st.error("Error: Pastikan semua kolom asumsi terisi dan tidak bernilai nol (0).")
     else:
-        with st.spinner(f"Menghitung prediksi rekursif {selected_fish} untuk {num_periods} tahun..."):
+        with st.spinner(f"Menghitung proyeksi rekursif {selected_fish}..."):
             try:
                 model_components = models_dict[selected_fish]
                 results_df = run_recursive_prediction(model_components, edited_df)
                 
-                st.markdown("---")
-                st.success("✅ Prediksi Selesai! Lihat hasilnya di bawah.")
+                # --- METRIK HASIL PREDIKSI ---
                 
-                # --- FITUR LAYOUT DUA KOLOM ---
+                col_res1, col_res2, col_res3 = st.columns(3)
+                
+                # Hitung Total Prediksi
+                total_pred_volume = results_df['Prediksi_Hybrid (Ribu Ekor)'].sum()
+                avg_pred_volume = results_df['Prediksi_Hybrid (Ribu Ekor)'].mean()
+                delta_pred = avg_pred_volume - hist_last_volume # Peningkatan vs tahun terakhir
+                
+                with col_res1:
+                    st.metric(
+                        label="Total Volume Proyeksi",
+                        value=f"{total_pred_volume:,.0f} Ribu Ekor",
+                        help="Total Volume Prediksi Hybrid selama periode simulasi."
+                    )
+                with col_res2:
+                    st.metric(
+                        label="Rata-rata Volume Proyeksi",
+                        value=f"{avg_pred_volume:,.0f} Ribu Ekor",
+                        delta=f"{delta_pred:,.0f} Ribu (vs. Vol. {last_year_data})",
+                        delta_color="normal"
+                    )
+                with col_res3:
+                    st.metric(
+                        label="Tahun Prediksi Terakhir",
+                        value=f"{results_df['Tahun'].max()}",
+                        help=f"Volume di tahun terakhir diprediksi sebesar {results_df['Prediksi_Hybrid (Ribu Ekor)'].iloc[-1]:,.0f} Ribu Ekor."
+                    )
+                    
+                st.markdown("---")
+                
+                # --- GRAFIK DAN TABEL HASIL (TATA LETAK KOLOM) ---
+                
                 col_chart, col_table = st.columns([3, 2])
                 
                 with col_chart:
-                    # --- FITUR PLOTLY GABUNGAN ---
-                    st.subheader("Visualisasi Tren Historis & Prediksi")
+                    st.subheader("Visualisasi Tren Historis & Proyeksi")
                     
                     # 1. Siapkan DataFrame Historis
-                    df_hist_volume = data_hist[data_hist['Kelompok Ikan'] == selected_fish].reset_index()
+                    df_hist_volume = hist_data.reset_index()
                     df_hist_volume['Tahun'] = df_hist_volume['Tahun'].dt.year
                     df_hist_volume = df_hist_volume[['Tahun', 'Volume (Ribu Ekor)']]
-                    df_hist_volume['Jenis Data'] = 'Historis (Aktual)'
+                    df_hist_volume.columns = ['Tahun', 'Volume (Ribu Ekor)']
+                    df_hist_volume['Jenis Data'] = 'Aktual (Historis)'
                     
                     # 2. Siapkan DataFrame Prediksi
-                    df_pred_volume = results_df[['Tahun', 'Prediksi_Hybrid (Volume Ribu Ekor)']]
+                    df_pred_volume = results_df[['Tahun', 'Prediksi_Hybrid (Ribu Ekor)']]
                     df_pred_volume.columns = ['Tahun', 'Volume (Ribu Ekor)']
-                    df_pred_volume['Jenis Data'] = 'Prediksi (Hybrid)'
+                    df_pred_volume['Jenis Data'] = 'Proyeksi (Hybrid)'
 
                     combined_df = pd.concat([df_hist_volume, df_pred_volume])
                     
@@ -171,32 +243,32 @@ if st.button("Jalankan Prediksi dan Tampilkan Hasil", type="primary"):
                         x='Tahun', 
                         y='Volume (Ribu Ekor)', 
                         color='Jenis Data', 
-                        title=f"Volume {selected_fish} (2019 - {results_df['Tahun'].max()})",
-                        markers=True
+                        title=f"Tren Volume {selected_fish} (2019 - {results_df['Tahun'].max()})",
+                        markers=True,
+                        template="plotly_white" # Template yang lebih bersih
                     )
-                    fig.update_layout(xaxis=dict(tickformat='d')) # Pastikan tahun ditampilkan sebagai integer
+                    fig.update_layout(xaxis=dict(tickformat='d'))
                     st.plotly_chart(fig, use_container_width=True)
 
                 with col_table:
-                    # --- TABEL HASIL PREDIIKSI ---
-                    st.subheader("Tabel Hasil Prediksi")
-                    display_cols = ['Tahun', 'Nilai (Rp. Juta)', 'Harga Rata-Rata Tertimbang(Rp/ ribu ekor)', 'Prediksi_Hybrid (Volume Ribu Ekor)']
+                    st.subheader("Tabel Detail Hasil Proyeksi")
+                    display_cols = ['Tahun', 'Nilai (Rp. Juta)', 'Harga Rata-Rata Tertimbang(Rp/ ribu ekor)', 'Prediksi_Hybrid (Ribu Ekor)']
                     st.dataframe(
                         results_df[display_cols].style.format({
-                            'Nilai (Rp. Juta)': '{:,.2f}',
-                            'Harga Rata-Rata Tertimbang(Rp/ ribu ekor)': '{:,.2f}',
-                            'Prediksi_Hybrid (Volume Ribu Ekor)': '{:,.2f}'
+                            'Nilai (Rp. Juta)': 'Rp {:,.2f}',
+                            'Harga Rata-Rata Tertimbang(Rp/ ribu ekor)': 'Rp {:,.0f}',
+                            'Prediksi_Hybrid (Ribu Ekor)': '{:,.0f}'
                         }),
                         use_container_width=True,
-                        height=400
+                        height=500
                     )
                     
                     # --- FITUR DOWNLOAD HASIL ---
                     csv = results_df.to_csv(index=False).encode('utf-8')
                     st.download_button(
-                        label="📥 Download Hasil Prediksi (CSV)",
+                        label="📥 Download Hasil Proyeksi (CSV)",
                         data=csv,
-                        file_name=f'prediksi_{selected_fish}_{last_year+1}_to_{results_df["Tahun"].max()}.csv',
+                        file_name=f'proyeksi_{selected_fish}_{last_year_data+1}_to_{results_df["Tahun"].max()}.csv',
                         mime='text/csv',
                         type="secondary"
                     )
@@ -204,26 +276,26 @@ if st.button("Jalankan Prediksi dan Tampilkan Hasil", type="primary"):
             except Exception as e:
                 st.error(f"Terjadi kesalahan saat prediksi: {e}")
 
-# --- 4. FITUR INFORMASI TAMBAHAN (st.expander) ---
+# --- 5. FITUR INFORMASI TAMBAHAN (st.expander) ---
 st.markdown("---")
-with st.expander("ℹ️ Penjelasan Metodologi Model Hybrid ARIMA-SVR"):
+with st.expander("🔬 Detail Metodologi Hybrid ARIMA-SVR"):
     st.markdown("""
-    Model yang digunakan dalam aplikasi ini adalah **Model Hybrid** yang dirancang untuk menggabungkan kekuatan dari dua jenis model prediksi:
+    Model ini menggunakan pendekatan **Hybrid Rekursif** (50% ARIMA + 50% SVR) yang menggabungkan:
     
-    1.  **ARIMA (AutoRegressive Integrated Moving Average):**
-        * Fokus pada analisis dan prediksi deret waktu berdasarkan pola internal data historis (**Volume**).
-        * Digunakan untuk menangkap tren jangka panjang dan pola musiman yang konsisten.
-
-    2.  **SVR (Support Vector Regression):**
-        * Fokus pada pemodelan hubungan antara **Volume** sebagai variabel dependen dengan variabel independen (**Nilai** dan **Harga Rata-Rata**).
-        * **Penting:** Model SVR ini bersifat **rekursif**, yang berarti nilai **Volume** prediksi dari periode sebelumnya (`Volume_Lag1`) digunakan sebagai salah satu fitur input untuk memprediksi volume pada periode saat ini. Ini yang membuat input asumsi Anda sangat krusial.
-
-    **Prediksi Akhir (Hybrid)** didapatkan dengan rata-rata tertimbang (50% dari hasil ARIMA dan 50% dari hasil SVR).
+    * **ARIMA (Pola Waktu):** Fokus pada tren intrinsik Volume historis.
+    * **SVR (Eksogen & Rekursif):** Memodelkan dampak dari asumsi **Nilai** dan **Harga** serta menggunakan **Volume prediksi tahun sebelumnya** sebagai *input lag* untuk memprediksi Volume tahun berikutnya.
+    
+    Pendekatan ini menghasilkan proyeksi yang lebih stabil dan responsif terhadap skenario ekonomi yang Anda inputkan.
     """)
 
-# --- TAMPILAN HISTORIS DI SIDEBAR ---
+# --- SIDEBAR: DATA HISTORIS ---
 st.sidebar.markdown("---")
-st.sidebar.subheader("Data Historis (Agregat)")
-st.sidebar.write(f"Data Agregat {selected_fish} (2019-{last_year}):")
-hist_display = data_hist[data_hist['Kelompok Ikan'] == selected_fish][['Volume (Ribu Ekor)', 'Nilai (Rp. Juta)', 'Harga Rata-Rata Tertimbang(Rp/ ribu ekor)']]
-st.sidebar.dataframe(hist_display.style.format('{:,.2f}'), height=200)
+st.sidebar.subheader("Data Historis Terakhir")
+st.sidebar.dataframe(
+    hist_last_row.drop('Kelompok Ikan').to_frame().T.style.format({
+        'Volume (Ribu Ekor)': '{:,.0f}',
+        'Nilai (Rp. Juta)': 'Rp {:,.2f}',
+        'Harga Rata-Rata Tertimbang(Rp/ ribu ekor)': 'Rp {:,.0f}'
+    }), 
+    use_container_width=True
+)
